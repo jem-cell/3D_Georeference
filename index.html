@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoMapper 3D</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <!-- Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <div class="sidebar glass-panel">
+            <header>
+                <h1>GeoMapper 3D</h1>
+                <p>Visualize your photo locations in 3D space.</p>
+            </header>
+
+            <div class="controls">
+                <div class="input-group" id="uploadGroup">
+                    <label for="fileInput">Upload Images (ZIP)</label>
+                    <input type="file" id="fileInput" accept=".zip">
+                    <div class="upload-status" id="status">Ready to upload</div>
+                </div>
+                <div class="input-group">
+                    <label>Controls</label>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary);">Left Click: Rotate<br>Right Click:
+                        Pan<br>Scroll: Zoom</p>
+                </div>
+                <div class="input-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="mapToggle" checked>
+                        <span class="checkmark"></span>
+                        Show Map Overlay
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div id="scene-container"></div>
+        </div>
+    </div>
+
+    <div id="tooltip" class="tooltip"></div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
