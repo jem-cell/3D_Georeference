@@ -61,6 +61,7 @@ function init3DScene() {
 
     // Interaction
     window.addEventListener('mousemove', onMouseMove, false);
+    window.addEventListener('click', onMouseClick, false);
 
     animate();
 }
@@ -69,6 +70,26 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const tooltip = document.getElementById('tooltip');
 let hoveredPoint = null;
+
+function onMouseClick(event) {
+    // Calculate mouse position in normalized device coordinates
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObjects(points);
+
+    if (intersects.length > 0) {
+        const object = intersects[0].object;
+
+        // Center controls on the clicked object
+        controls.target.copy(object.position);
+        controls.update();
+
+        console.log("Centered view on:", object.userData.name);
+    }
+}
 
 function onMouseMove(event) {
     // Calculate mouse position in normalized device coordinates
@@ -103,7 +124,13 @@ function animate() {
 
             if (hoveredPoint !== object) {
                 // Reset previous
-                if (hoveredPoint) hoveredPoint.material.color.setHex(0x38bdf8);
+                if (hoveredPoint) {
+                    let color = 0x38bdf8;
+                    if (bubbleColorPicker) {
+                        color = bubbleColorPicker.value;
+                    }
+                    hoveredPoint.material.color.set(color);
+                }
 
                 // Highlight new
                 hoveredPoint = object;
@@ -119,7 +146,11 @@ function animate() {
             }
         } else {
             if (hoveredPoint) {
-                hoveredPoint.material.color.setHex(0x38bdf8);
+                let color = 0x38bdf8;
+                if (bubbleColorPicker) {
+                    color = bubbleColorPicker.value;
+                }
+                hoveredPoint.material.color.set(color);
                 hoveredPoint = null;
                 tooltip.style.display = 'none';
             }
@@ -274,9 +305,6 @@ if (bubbleSizeSlider && bubbleSizeValue) {
 
         // Update existing points
         points.forEach(point => {
-            // Scale geometry or mesh? Scaling mesh is more efficient
-            // Default radius was 5. We want the slider (1-20) to represent the radius.
-            // So scale factor = size / 5
             const scale = size / 5;
             point.scale.set(scale, scale, scale);
         });
@@ -291,17 +319,16 @@ if (bubbleColorPicker) {
         const color = e.target.value;
         points.forEach(point => {
             point.material.color.set(color);
-            // Also update cone color if it exists
-            const cone = point.children.find(child => child.type === 'Mesh' && child.geometry.type === 'ConeGeometry');
-            if (cone) {
-                cone.material.color.set(color);
+            // Also update frustum color if it exists
+            const frustum = point.children.find(child => child.type === 'LineSegments');
+            if (frustum) {
+                frustum.material.color.set(color);
             }
         });
     });
 }
 
 function createPoint(pos, imgData) {
-    // console.log("Creating point at:", pos); // Uncomment if too spammy
     const geometry = new THREE.SphereGeometry(5, 32, 32);
 
     // Get current color
@@ -322,58 +349,16 @@ function createPoint(pos, imgData) {
         sphere.scale.set(scale, scale, scale);
     }
 
-    // Add direction cone if heading is available
+    // Add direction frustum if heading is available
     if (imgData.heading !== undefined && imgData.heading !== null) {
-        const coneGeometry = new THREE.ConeGeometry(2, 6, 16); // Base radius 2, height 6
-        const coneMaterial = new THREE.MeshStandardMaterial({ color: color, roughness: 0.3, metalness: 0.8 });
-        const cone = new THREE.Mesh(coneGeometry, coneMaterial);
-
-        // Align cone to point North (-Z) by default (Cone points +Y)
-        cone.geometry.rotateX(-Math.PI / 2);
+        const frustum = createCameraFrustum(color);
 
         // Rotate to match heading (clockwise from North)
         // Three.js Y rotation is CCW, so we negate the heading
         const headingRad = THREE.MathUtils.degToRad(imgData.heading);
-        cone.rotation.y = -headingRad;
+        frustum.rotation.y = -headingRad;
 
-        // Position cone slightly outside the sphere
-        // We want it to be visible on the surface or just outside
-        // Sphere radius is 5 (scaled). Let's put it at distance 7?
-        // Actually, let's just add it to the sphere and offset it?
-        // If we add to sphere, it scales with sphere.
-        // Let's put it on top/front?
-        // Better: Put it at the center but rotated, and moved forward along its local -Z axis?
-        // Or just rotate the whole sphere? No, sphere rotation doesn't matter visually.
-        // Let's just add the cone to the sphere.
-
-        // Move cone forward in its local -Z direction (which is North relative to the cone)
-        // But we rotated the geometry, so local Z is correct.
-        // Actually, if we rotate the mesh, we can just translate Z.
-
-        // Let's try this:
-        // Cone is child of sphere.
-        // Cone geometry points -Z.
-        // Cone mesh is rotated by -heading around Y.
-        // Cone position is 0,0,0 relative to sphere.
-        // But we want it to "stick out".
-        // Maybe we don't make it a child, or we do but we offset it.
-
-        // Simpler:
-        // Cone points in direction.
-        // Position is slightly offset from center in that direction.
-        // But if we scale the sphere, the offset needs to scale.
-        // If it's a child, it scales automatically!
-
-        // So:
-        // 1. Cone points -Z (North).
-        // 2. Translate cone -Z by radius (5) + half height (3) = 8.
-        // 3. Rotate cone container?
-
-        // Let's use a pivot group or just rotate the cone mesh?
-        // If we translate geometry, rotation rotates the position too.
-        cone.geometry.translate(0, 0, -8); // Move forward along -Z
-
-        sphere.add(cone);
+        sphere.add(frustum);
     }
 
     // Add user data for interaction later
@@ -381,6 +366,48 @@ function createPoint(pos, imgData) {
 
     scene.add(sphere);
     points.push(sphere);
+}
+
+function createCameraFrustum(color) {
+    // Frustum dimensions
+    const length = 10;
+    const width = 6;
+    const height = 4.5;
+
+    const vertices = [];
+
+    // Origin
+    const o = new THREE.Vector3(0, 0, 0);
+
+    // Base corners (facing -Z, which is North/Forward)
+    const tl = new THREE.Vector3(-width / 2, height / 2, -length);
+    const tr = new THREE.Vector3(width / 2, height / 2, -length);
+    const bl = new THREE.Vector3(-width / 2, -height / 2, -length);
+    const br = new THREE.Vector3(width / 2, -height / 2, -length);
+
+    // Lines from origin to corners
+    vertices.push(o.x, o.y, o.z, tl.x, tl.y, tl.z);
+    vertices.push(o.x, o.y, o.z, tr.x, tr.y, tr.z);
+    vertices.push(o.x, o.y, o.z, bl.x, bl.y, bl.z);
+    vertices.push(o.x, o.y, o.z, br.x, br.y, br.z);
+
+    // Base rectangle
+    vertices.push(tl.x, tl.y, tl.z, tr.x, tr.y, tr.z);
+    vertices.push(tr.x, tr.y, tr.z, br.x, br.y, br.z);
+    vertices.push(br.x, br.y, br.z, bl.x, bl.y, bl.z);
+    vertices.push(bl.x, bl.y, bl.z, tl.x, tl.y, tl.z);
+
+    // Top indicator (triangle on top to show "up")
+    const topMid = new THREE.Vector3(0, height / 2 + 2, -length);
+    vertices.push(tl.x, tl.y, tl.z, topMid.x, topMid.y, topMid.z);
+    vertices.push(tr.x, tr.y, tr.z, topMid.x, topMid.y, topMid.z);
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+
+    const material = new THREE.LineBasicMaterial({ color: color });
+
+    return new THREE.LineSegments(geometry, material);
 }
 
 function getCenter(images) {
