@@ -1,3 +1,12 @@
+window.onerror = function (message, source, lineno, colno, error) {
+    const statusDiv = document.getElementById('status');
+    if (statusDiv) {
+        statusDiv.textContent = `Error: ${message}`;
+        statusDiv.style.color = 'red';
+    }
+    console.error("Global Error:", message, "at", source, ":", lineno);
+};
+
 let scene, camera, renderer, controls;
 let points = [];
 let mapTiles = []; // Store map tiles to toggle visibility
@@ -141,17 +150,29 @@ fileInput.addEventListener('change', async (e) => {
         const validImages = [];
 
         zip.forEach((relativePath, zipEntry) => {
-            if (!zipEntry.dir && isImage(zipEntry.name)) {
+            if (!zipEntry.dir && isImage(zipEntry.name) && !zipEntry.name.includes('__MACOSX')) {
+                console.log(`Processing: ${zipEntry.name}`);
                 const promise = zipEntry.async('blob').then(async (blob) => {
-                    const exifData = await getExifData(blob);
-                    if (exifData && exifData.lat && exifData.lng) {
-                        validImages.push({
-                            name: zipEntry.name,
-                            blob: blob,
-                            lat: exifData.lat,
-                            lng: exifData.lng,
-                            alt: exifData.alt || 0
-                        });
+                    if (zipEntry.name.toLowerCase().endsWith('.heic')) {
+                        console.warn(`HEIC format not fully supported by exif-js: ${zipEntry.name}`);
+                    }
+
+                    try {
+                        const exifData = await getExifData(blob);
+                        if (exifData && exifData.lat && exifData.lng) {
+                            console.log(`Found GPS for: ${zipEntry.name}`, exifData);
+                            validImages.push({
+                                name: zipEntry.name,
+                                blob: blob,
+                                lat: exifData.lat,
+                                lng: exifData.lng,
+                                alt: exifData.alt || 0
+                            });
+                        } else {
+                            console.warn(`No GPS data found for: ${zipEntry.name}`);
+                        }
+                    } catch (e) {
+                        console.error(`Error reading EXIF for ${zipEntry.name}:`, e);
                     }
                 });
                 imagePromises.push(promise);
@@ -160,8 +181,10 @@ fileInput.addEventListener('change', async (e) => {
 
         await Promise.all(imagePromises);
 
+        console.log(`Processed ${imagePromises.length} images. Valid: ${validImages.length}`);
+
         if (validImages.length === 0) {
-            statusDiv.textContent = 'No images with GPS data found.';
+            statusDiv.textContent = 'No images with GPS data found. Check console for details.';
             statusDiv.style.color = 'var(--error-color)';
             return;
         }
@@ -183,6 +206,8 @@ fileInput.addEventListener('change', async (e) => {
             createPoint(pos, img);
         });
 
+        fitCameraToSelection();
+
         statusDiv.textContent = `Visualized ${validImages.length} images in 3D with Map Overlay.`;
         statusDiv.style.color = 'var(--success-color)';
 
@@ -193,12 +218,163 @@ fileInput.addEventListener('change', async (e) => {
     }
 });
 
+function fitCameraToSelection() {
+    if (points.length === 0) {
+        console.warn("fitCameraToSelection: No points to fit.");
+        return;
+    }
+
+    const box = new THREE.Box3();
+    points.forEach(mesh => {
+        box.expandByObject(mesh);
+    });
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+
+    console.log("Bounding Box Center:", center);
+    console.log("Bounding Box Size:", size);
+
+    // Update controls target to center of data
+    controls.target.copy(center);
+
+    // Position camera to view the entire box
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fov = camera.fov * (Math.PI / 180);
+    let cameraZ = Math.abs(maxDim / 2 * Math.tan(fov * 2)); // Basic distance estimation
+
+    console.log("Calculated Camera Distance:", cameraZ);
+
+    // Add some padding
+    cameraZ *= 1.5;
+
+    // Ensure we don't get too close or too far if single point
+    if (cameraZ < 100) cameraZ = 100;
+    if (cameraZ > 5000) cameraZ = 5000;
+
+    console.log("Clamped Camera Distance:", cameraZ);
+
+    // Move camera relative to center
+    // We want to look down at an angle
+    camera.position.set(center.x, center.y + cameraZ, center.z + cameraZ);
+    console.log("New Camera Position:", camera.position);
+
+    camera.updateProjectionMatrix();
+    controls.update();
+}
+
+// Bubble Size Slider
+const bubbleSizeSlider = document.getElementById('bubbleSize');
+const bubbleSizeValue = document.getElementById('bubbleSizeValue');
+
+if (bubbleSizeSlider && bubbleSizeValue) {
+    bubbleSizeSlider.addEventListener('input', (e) => {
+        const size = parseFloat(e.target.value);
+        bubbleSizeValue.textContent = size;
+
+        // Update existing points
+        points.forEach(point => {
+            // Scale geometry or mesh? Scaling mesh is more efficient
+            // Default radius was 5. We want the slider (1-20) to represent the radius.
+            // So scale factor = size / 5
+            const scale = size / 5;
+            point.scale.set(scale, scale, scale);
+        });
+    });
+}
+
+// Bubble Color Picker
+const bubbleColorPicker = document.getElementById('bubbleColor');
+
+if (bubbleColorPicker) {
+    bubbleColorPicker.addEventListener('input', (e) => {
+        const color = e.target.value;
+        points.forEach(point => {
+            point.material.color.set(color);
+            // Also update cone color if it exists
+            const cone = point.children.find(child => child.type === 'Mesh' && child.geometry.type === 'ConeGeometry');
+            if (cone) {
+                cone.material.color.set(color);
+            }
+        });
+    });
+}
+
 function createPoint(pos, imgData) {
+    // console.log("Creating point at:", pos); // Uncomment if too spammy
     const geometry = new THREE.SphereGeometry(5, 32, 32);
-    const material = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.3, metalness: 0.8 });
+
+    // Get current color
+    let color = 0x38bdf8;
+    if (bubbleColorPicker) {
+        color = bubbleColorPicker.value;
+    }
+
+    const material = new THREE.MeshStandardMaterial({ color: color, roughness: 0.3, metalness: 0.8 });
     const sphere = new THREE.Mesh(geometry, material);
 
     sphere.position.set(pos.x, pos.y, pos.z);
+
+    // Apply current slider size
+    if (bubbleSizeSlider) {
+        const size = parseFloat(bubbleSizeSlider.value);
+        const scale = size / 5;
+        sphere.scale.set(scale, scale, scale);
+    }
+
+    // Add direction cone if heading is available
+    if (imgData.heading !== undefined && imgData.heading !== null) {
+        const coneGeometry = new THREE.ConeGeometry(2, 6, 16); // Base radius 2, height 6
+        const coneMaterial = new THREE.MeshStandardMaterial({ color: color, roughness: 0.3, metalness: 0.8 });
+        const cone = new THREE.Mesh(coneGeometry, coneMaterial);
+
+        // Align cone to point North (-Z) by default (Cone points +Y)
+        cone.geometry.rotateX(-Math.PI / 2);
+
+        // Rotate to match heading (clockwise from North)
+        // Three.js Y rotation is CCW, so we negate the heading
+        const headingRad = THREE.MathUtils.degToRad(imgData.heading);
+        cone.rotation.y = -headingRad;
+
+        // Position cone slightly outside the sphere
+        // We want it to be visible on the surface or just outside
+        // Sphere radius is 5 (scaled). Let's put it at distance 7?
+        // Actually, let's just add it to the sphere and offset it?
+        // If we add to sphere, it scales with sphere.
+        // Let's put it on top/front?
+        // Better: Put it at the center but rotated, and moved forward along its local -Z axis?
+        // Or just rotate the whole sphere? No, sphere rotation doesn't matter visually.
+        // Let's just add the cone to the sphere.
+
+        // Move cone forward in its local -Z direction (which is North relative to the cone)
+        // But we rotated the geometry, so local Z is correct.
+        // Actually, if we rotate the mesh, we can just translate Z.
+
+        // Let's try this:
+        // Cone is child of sphere.
+        // Cone geometry points -Z.
+        // Cone mesh is rotated by -heading around Y.
+        // Cone position is 0,0,0 relative to sphere.
+        // But we want it to "stick out".
+        // Maybe we don't make it a child, or we do but we offset it.
+
+        // Simpler:
+        // Cone points in direction.
+        // Position is slightly offset from center in that direction.
+        // But if we scale the sphere, the offset needs to scale.
+        // If it's a child, it scales automatically!
+
+        // So:
+        // 1. Cone points -Z (North).
+        // 2. Translate cone -Z by radius (5) + half height (3) = 8.
+        // 3. Rotate cone container?
+
+        // Let's use a pivot group or just rotate the cone mesh?
+        // If we translate geometry, rotation rotates the position too.
+        cone.geometry.translate(0, 0, -8); // Move forward along -Z
+
+        sphere.add(cone);
+    }
 
     // Add user data for interaction later
     sphere.userData = { ...imgData };
@@ -318,34 +494,61 @@ function isImage(filename) {
 }
 
 function getExifData(blob) {
-    return new Promise((resolve) => {
-        EXIF.getData(blob, function () {
-            const lat = EXIF.getTag(this, "GPSLatitude");
-            const latRef = EXIF.getTag(this, "GPSLatitudeRef");
-            const lng = EXIF.getTag(this, "GPSLongitude");
-            const lngRef = EXIF.getTag(this, "GPSLongitudeRef");
-            const alt = EXIF.getTag(this, "GPSAltitude");
-            const altRef = EXIF.getTag(this, "GPSAltitudeRef");
+    return new Promise((resolve, reject) => {
+        if (typeof EXIF === 'undefined') {
+            reject(new Error('exif-js library not loaded'));
+            return;
+        }
 
-            if (lat && latRef && lng && lngRef) {
-                const decimalLat = convertDMSToDD(lat, latRef);
-                const decimalLng = convertDMSToDD(lng, lngRef);
+        // Timeout after 2 seconds to prevent hanging
+        const timeoutId = setTimeout(() => {
+            resolve(null);
+        }, 2000);
 
-                let altitude = 0;
-                if (alt !== undefined && alt !== null) {
-                    altitude = parseFloat(alt);
-                    if (altRef === 1) altitude = -altitude;
+        try {
+            EXIF.getData(blob, function () {
+                clearTimeout(timeoutId);
+                const lat = EXIF.getTag(this, "GPSLatitude");
+                const latRef = EXIF.getTag(this, "GPSLatitudeRef");
+                const lng = EXIF.getTag(this, "GPSLongitude");
+                const lngRef = EXIF.getTag(this, "GPSLongitudeRef");
+                const alt = EXIF.getTag(this, "GPSAltitude");
+                const altRef = EXIF.getTag(this, "GPSAltitudeRef");
+
+                // Direction
+                const dir = EXIF.getTag(this, "GPSImgDirection");
+                const dirRef = EXIF.getTag(this, "GPSImgDirectionRef"); // 'T' for True, 'M' for Magnetic
+
+                if (lat && latRef && lng && lngRef) {
+                    const decimalLat = convertDMSToDD(lat, latRef);
+                    const decimalLng = convertDMSToDD(lng, lngRef);
+
+                    let altitude = 0;
+                    if (alt !== undefined && alt !== null) {
+                        altitude = parseFloat(alt);
+                        if (altRef === 1) altitude = -altitude;
+                    }
+
+                    let heading = null;
+                    if (dir !== undefined && dir !== null) {
+                        heading = parseFloat(dir);
+                    }
+
+                    resolve({
+                        lat: decimalLat,
+                        lng: decimalLng,
+                        alt: altitude,
+                        heading: heading
+                    });
+                } else {
+                    resolve(null);
                 }
-
-                resolve({
-                    lat: decimalLat,
-                    lng: decimalLng,
-                    alt: altitude
-                });
-            } else {
-                resolve(null);
-            }
-        });
+            });
+        } catch (e) {
+            clearTimeout(timeoutId);
+            console.error("EXIF.getData error:", e);
+            resolve(null);
+        }
     });
 }
 

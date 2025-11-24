@@ -33,6 +33,18 @@
                     <input type="file" id="fileInput" accept=".zip">
                     <div class="upload-status" id="status">Ready to upload</div>
                 </div>
+
+                <div class="input-group">
+                    <label for="bubbleSize">Bubble Size: <span id="bubbleSizeValue">5</span></label>
+                    <input type="range" id="bubbleSize" min="1" max="20" value="5">
+                </div>
+
+                <div class="input-group">
+                    <label for="bubbleColor">Bubble Color</label>
+                    <input type="color" id="bubbleColor" value="#38bdf8"
+                        style="width: 100%; height: 40px; cursor: pointer;">
+                </div>
+
                 <div class="input-group">
                     <label>Controls</label>
                     <p style="font-size: 0.8rem; color: var(--text-secondary);">Left Click: Rotate<br>Right Click:
@@ -47,10 +59,7 @@
                 </div>
             </div>
         </div>
-
-        <div class="map-container">
-            <div id="scene-container"></div>
-        </div>
+        <div id="scene-container"></div>
     </div>
 
     <div id="tooltip" class="tooltip"></div>
